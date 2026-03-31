@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#4a90e2">
+    <title>Dorm Attendance</title>
+
+    <link rel="manifest" href="data:application/manifest+json,{
+        'name': 'Dorm Attendance Pro',
+        'short_name': 'Attendance',
+        'start_url': '.',
+        'display': 'standalone',
+        'background_color': '#f4f4f9',
+        'theme_color': '#4a90e2',
+        'icons': [{
+            'src': 'https://cdn-icons-png.flaticon.com/512/3472/3472051.png',
+            'sizes': '512x512',
+            'type': 'image/png',
+            'purpose': 'any maskable'
+        }]
+    }">
+
+    <style>
+        :root { --bg: #f4f4f9; --text: #333; --card: #ffffff; --accent: #4a90e2; --border: #ddd; }
+        body.night-shift { --bg: #1a1a2e; --text: #e0e0e0; --card: #16213e; --accent: #0f3460; --border: #444; }
+        body { font-family: system-ui, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 10px; }
+        header { position: sticky; top: 0; background: var(--bg); padding-bottom: 10px; border-bottom: 2px solid var(--border); z-index: 100; }
+        .controls-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-top: 5px; }
+        select, button, input[type="file"] { padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 0.9rem; }
+        #saveBtn { background-color: #4CAF50; color: white; opacity: 0.4; pointer-events: none; }
+        #saveBtn.active { opacity: 1; pointer-events: auto; }
+        .student-table { width: 100%; margin-top: 15px; border-collapse: collapse; }
+        .room-group { border-top: 3px solid var(--accent); background: var(--card); }
+        td { padding: 10px 5px; border-bottom: 1px solid var(--border); text-align: center; }
+        .name-cell { text-align: left; font-weight: 500; font-size: 0.9rem; }
+        .attendance-btn { width: 45%; padding: 8px 0; font-size: 0.8rem; border: 1px solid var(--border); }
+        .present.selected { background: #d4edda; color: #155724; border-color: #c3e6cb; font-weight: bold; }
+        .absent.selected { background: #f8d7da; color: #721c24; border-color: #f5c6cb; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h2 id="titleDate" style="margin:0; font-size: 1.1rem;">Roll Call</h2>
+    <div class="controls-grid">
+        <button id="shiftToggle" onclick="toggleShift()">Day Shift</button>
+        <select id="filterSelect" onchange="renderList()"><option value="all">Filters</option></select>
+        <button id="saveBtn" onclick="exportData()">Save</button>
+    </div>
+    <input type="file" id="fileInput" accept=".xlsx, .xls" style="margin-top:10px; width: 95%;">
+</header>
+
+<table class="student-table" id="studentList"></table>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+
+<script>
+    // 1. REGISTER SERVICE WORKER (Required for "Standalone" install)
+    if ('serviceWorker' in navigator) {
+        const sw = `
+            self.addEventListener('install', e => e.waitUntil(caches.open('v1').then(c => c.add(location.href))));
+            self.addEventListener('fetch', e => e.respondWith(caches.match(e.request).then(r => r || fetch(e.request))));
+        `;
+        const blob = new Blob([sw], {type: 'text/javascript'});
+        navigator.serviceWorker.register(URL.createObjectURL(blob));
+    }
+
+    let studentData = [];
+    let attendance = {};
+
+    document.getElementById('titleDate').innerText = `Roll Call for ${new Date().toLocaleDateString()}`;
+
+    function toggleShift() {
+        const isNight = document.body.classList.toggle('night-shift');
+        document.getElementById('shiftToggle').innerText = isNight ? "Night Shift" : "Day Shift";
+    }
+
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const data = new Uint8Array(event.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            studentData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+            setupFilters();
+            renderList();
+        };
+        reader.readAsArrayBuffer(e.target.files[0]);
+    });
+
+    function setupFilters() {
+        const filters = [...new Set(studentData.map(s => `${s.Building} - Fl ${s.Floor}`))];
+        const select = document.getElementById('filterSelect');
+        select.innerHTML = '<option value="all">All</option>';
+        filters.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f; opt.innerText = f;
+            select.appendChild(opt);
+        });
+    }
+
+    function mark(index, status) {
+        attendance[index] = status;
+        renderList();
+        if (Object.keys(attendance).length === studentData.length) {
+            document.getElementById('saveBtn').classList.add('active');
+        }
+    }
+
+    function renderList() {
+        const container = document.getElementById('studentList');
+        const filterValue = document.getElementById('filterSelect').value;
+        container.innerHTML = '';
+        let lastRoomKey = "";
+
+        studentData.forEach((s, index) => {
+            const currentFilter = `${s.Building} - Fl ${s.Floor}`;
+            if (filterValue !== 'all' && filterValue !== currentFilter) return;
+
+            const roomKey = `${s.Building}-${s.Room}`;
+            const isMerged = roomKey === lastRoomKey;
+            const row = document.createElement('tr');
+            if (!isMerged) row.className = 'room-group';
+
+            row.innerHTML = `
+                <td style="font-size:0.7rem; width:15%;"><b>${isMerged ? '' : s.Building + '<br>' + s.Room}</b></td>
+                <td style="font-size:0.7rem; width:10%;">${s.Class}</td>
+                <td class="name-cell">${s.Name}</td>
+                <td style="width:35%;">
+                    <button class="attendance-btn present ${attendance[index] === 'P' ? 'selected' : ''}" onclick="mark(${index}, 'P')">P</button>
+                    <button class="attendance-btn absent ${attendance[index] === 'A' ? 'selected' : ''}" onclick="mark(${index}, 'A')">A</button>
+                </td>
+            `;
+            container.appendChild(row);
+            lastRoomKey = roomKey;
+        });
+    }
+
+    function exportData() {
+        const results = studentData.map((s, i) => ({ ...s, Attendance: attendance[i] === 'P' ? 'Present' : 'Absent' }));
+        const ws = XLSX.utils.json_to_sheet(results);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Attendance");
+        XLSX.writeFile(wb, `RollCall_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+</script>
+</body>
+</html>
